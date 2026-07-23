@@ -3,13 +3,13 @@
     Creates a DasaCloud Setup executable containing a signed MSIX package.
 
 .DESCRIPTION
-    IExpress (included with Windows) creates a self-extracting Setup executable.
-    The executable extracts the MSIX, optionally trusts a supplied internal
-    certificate for the current user, and calls install-dasacloud.ps1.
+    Compiles the included Windows bootstrapper with the .NET Framework C#
+    compiler. The Setup executable embeds the MSIX package and, when supplied,
+    an internal test certificate. At install time it extracts the files,
+    trusts the test certificate for the current user, and runs Add-AppxPackage.
 
-    Use this only after build-msix.ps1 has created a signed MSIX package. Pass
-    TrustCertificatePath for an internal release certificate to include in the
-    installer, and SigningCertificatePath to Authenticode-sign the Setup file.
+    When SigningCertificatePath is supplied, the generated Setup executable is
+    Authenticode-signed with that same certificate.
 #>
 
 param(
@@ -19,8 +19,7 @@ param(
     [string]$OutputPath,
     [string]$TrustCertificatePath,
     [string]$SigningCertificatePath,
-    [string]$CertificatePassword,
-    [string]$DisplayName = "DasaCloud Setup"
+    [string]$CertificatePassword
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,9 +29,14 @@ $ResolvedPackagePath = (Resolve-Path -LiteralPath $PackagePath).Path
 $ResolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 $ResolvedTrustCertificatePath = $null
 $ResolvedSigningCertificatePath = $null
+$BootstrapperSourcePath = Join-Path $ScriptDir "installer\Bootstrapper.cs"
 
 if ([System.IO.Path]::GetExtension($ResolvedPackagePath).ToLowerInvariant() -notin @(".msix", ".msixbundle")) {
     throw "PackagePath must point to an .msix or .msixbundle file."
+}
+
+if (-not (Test-Path $BootstrapperSourcePath)) {
+    throw "Bootstrapper source was not found at $BootstrapperSourcePath."
 }
 
 if ($TrustCertificatePath) {
@@ -49,9 +53,13 @@ if ($SigningCertificatePath) {
     }
 }
 
-$IExpressPath = Join-Path $env:WINDIR "System32\iexpress.exe"
-if (-not (Test-Path $IExpressPath)) {
-    throw "IExpress was not found at $IExpressPath. Run this script on Windows."
+function Find-CSharpCompiler {
+    $Candidates = @(
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe")
+    )
+
+    return $Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
 function Find-SignTool {
@@ -80,114 +88,51 @@ function Find-SignTool {
     return $null
 }
 
+$CSharpCompiler = Find-CSharpCompiler
+if (-not $CSharpCompiler) {
+    throw "The .NET Framework C# compiler was not found. Run this script on Windows 10 or later."
+}
+
 $OutputDirectory = Split-Path -Parent $ResolvedOutputPath
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 if (Test-Path $ResolvedOutputPath) {
     Remove-Item $ResolvedOutputPath -Force
 }
 
-$StagingDirectory = Join-Path $env:TEMP ("dasacloud-installer-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
-$StagedInstallerPath = Join-Path $StagingDirectory (Split-Path -Leaf $ResolvedOutputPath)
+$CompilerArguments = @(
+    "/nologo",
+    "/target:winexe",
+    "/platform:x64",
+    "/optimize+",
+    "/out:$ResolvedOutputPath",
+    "/r:System.Windows.Forms.dll",
+    "/resource:$ResolvedPackagePath,DasaCloud.x64.msix"
+)
+if ($ResolvedTrustCertificatePath) {
+    $CompilerArguments += "/resource:$ResolvedTrustCertificatePath,DasaCloud-Test.cer"
+}
+$CompilerArguments += $BootstrapperSourcePath
 
-try {
-    $PackageFileName = Split-Path -Leaf $ResolvedPackagePath
-    Copy-Item -LiteralPath $ResolvedPackagePath -Destination (Join-Path $StagingDirectory $PackageFileName)
-    Copy-Item -LiteralPath (Join-Path $ScriptDir "install-dasacloud.ps1") -Destination (Join-Path $StagingDirectory "install-dasacloud.ps1")
+& $CSharpCompiler @CompilerArguments
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ResolvedOutputPath)) {
+    throw "The DasaCloud Setup bootstrapper could not be compiled."
+}
 
-    $Files = @("install-dasacloud.ps1", $PackageFileName)
-    $InstallArguments = "-PackagePath `"$PackageFileName`""
-    if ($ResolvedTrustCertificatePath) {
-        $CertificateFileName = Split-Path -Leaf $ResolvedTrustCertificatePath
-        Copy-Item -LiteralPath $ResolvedTrustCertificatePath -Destination (Join-Path $StagingDirectory $CertificateFileName)
-        $Files += $CertificateFileName
-        $InstallArguments += " -CertificatePath `"$CertificateFileName`""
+if ($ResolvedSigningCertificatePath) {
+    $SignTool = Find-SignTool
+    if (-not $SignTool) {
+        throw "signtool.exe was not found. Install the Windows SDK before signing the Setup executable."
     }
 
-    $FileDeclarations = for ($Index = 0; $Index -lt $Files.Count; $Index++) {
-        "FILE$Index=`"$($Files[$Index])`""
+    $SignArguments = @("sign", "/fd", "SHA256", "/f", $ResolvedSigningCertificatePath)
+    if ($CertificatePassword) {
+        $SignArguments += @("/p", $CertificatePassword)
     }
-    $SourceEntries = for ($Index = 0; $Index -lt $Files.Count; $Index++) {
-        "%FILE$Index%="
-    }
-
-    $SedPath = Join-Path $StagingDirectory "DasaCloud-Setup.sed"
-    $SedContent = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=1
-HideExtractAnimation=0
-UseLongFileName=1
-InsideCompressed=0
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=%InstallPrompt%
-DisplayLicense=%DisplayLicense%
-FinishMessage=%FinishMessage%
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=%PostInstallCmd%
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-InstallPrompt=
-DisplayLicense=
-FinishMessage=DasaCloud was installed successfully.
-TargetName=$StagedInstallerPath
-FriendlyName=$DisplayName
-AppLaunched=powershell.exe -NoProfile -ExecutionPolicy Bypass -File install-dasacloud.ps1 $InstallArguments
-PostInstallCmd=<None>
-AdminQuietInstCmd=
-UserQuietInstCmd=
-$($FileDeclarations -join "`r`n")
-[SourceFiles]
-SourceFiles0=$StagingDirectory\
-[SourceFiles0]
-$($SourceEntries -join "`r`n")
-"@
-
-    [System.IO.File]::WriteAllText($SedPath, $SedContent, [System.Text.Encoding]::ASCII)
-    $IExpressOutput = & $IExpressPath /N /Q $SedPath 2>&1
-    $IExpressExitCode = $LASTEXITCODE
-    if ($IExpressExitCode -ne 0 -or -not (Test-Path $StagedInstallerPath)) {
-        $IExpressDetails = ($IExpressOutput | Out-String).Trim()
-        throw "IExpress failed to create $StagedInstallerPath (exit code $IExpressExitCode). $IExpressDetails"
-    }
-    Copy-Item -LiteralPath $StagedInstallerPath -Destination $ResolvedOutputPath -Force
-
-    if ($ResolvedSigningCertificatePath) {
-        $SignTool = Find-SignTool
-        if (-not $SignTool) {
-            throw "signtool.exe was not found. Install the Windows SDK before signing the Setup executable."
-        }
-
-        $SignArguments = @("sign", "/fd", "SHA256", "/f", $ResolvedSigningCertificatePath)
-        if ($CertificatePassword) {
-            $SignArguments += @("/p", $CertificatePassword)
-        }
-        $SignArguments += @("/tr", "http://timestamp.digicert.com", "/td", "SHA256", $ResolvedOutputPath)
-        & $SignTool @SignArguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "Signing failed for $ResolvedOutputPath with exit code $LASTEXITCODE."
-        }
-    }
-
-    Write-Host "Created installer: $ResolvedOutputPath" -ForegroundColor Green
-} finally {
-    if (Test-Path $StagingDirectory) {
-        try {
-            Remove-Item $StagingDirectory -Recurse -Force -ErrorAction Stop
-        } catch {
-            # IExpress may retain its generated DDF file briefly after creating
-            # the installer. The installer has already been copied out, so a
-            # best-effort cleanup must not fail the release build.
-            Write-Warning "Could not remove temporary IExpress files at $StagingDirectory. They can be removed later by Windows."
-        }
+    $SignArguments += @("/tr", "http://timestamp.digicert.com", "/td", "SHA256", $ResolvedOutputPath)
+    & $SignTool @SignArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Signing failed for $ResolvedOutputPath with exit code $LASTEXITCODE."
     }
 }
+
+Write-Host "Created installer: $ResolvedOutputPath" -ForegroundColor Green

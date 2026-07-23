@@ -158,7 +158,7 @@ Publicly trusted code-signing certificates install normally. For an internal sel
 ├── package/             # MSIX packaging assets
 ├── dev-install.ps1      # Dev build + register script
 ├── build-msix.ps1       # Signed production MSIX builder
-├── build-installer.ps1  # Wraps a signed MSIX in a Setup .exe
+├── build-installer.ps1  # Compiles the signed MSIX Setup .exe
 ├── install-dasacloud.ps1 # End-user MSIX installer
 └── .github/workflows/   # Test and production Windows builds
 ```
