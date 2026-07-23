@@ -181,6 +181,13 @@ $($SourceEntries -join "`r`n")
     Write-Host "Created installer: $ResolvedOutputPath" -ForegroundColor Green
 } finally {
     if (Test-Path $StagingDirectory) {
-        Remove-Item $StagingDirectory -Recurse -Force
+        try {
+            Remove-Item $StagingDirectory -Recurse -Force -ErrorAction Stop
+        } catch {
+            # IExpress may retain its generated DDF file briefly after creating
+            # the installer. The installer has already been copied out, so a
+            # best-effort cleanup must not fail the release build.
+            Write-Warning "Could not remove temporary IExpress files at $StagingDirectory. They can be removed later by Windows."
+        }
     }
 }
