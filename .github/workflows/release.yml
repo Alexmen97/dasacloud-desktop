@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
         run: |
           .\build-msix.ps1 -Arch x64 -SkipBuild -OutputDir dist -Publisher $env:DASACLOUD_MSIX_PUBLISHER -PublisherDisplayName $env:DASACLOUD_PUBLISHER_DISPLAY_NAME -CertificatePath signing\dasacloud-signing.pfx -CertificatePassword $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD
-          .\build-installer.ps1 -PackagePath dist\DasaCloud.x64.msix -OutputPath dist\DasaCloud-Setup-x64.exe -DisplayName "DasaCloud Setup" -SigningCertificatePath signing\dasacloud-signing.pfx -CertificatePassword $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD
+          .\build-installer.ps1 -PackagePath dist\DasaCloud.x64.msix -OutputPath dist\DasaCloud-Setup-x64.exe -SigningCertificatePath signing\dasacloud-signing.pfx -CertificatePassword $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD
 
       - name: Write checksums
         shell: pwsh
