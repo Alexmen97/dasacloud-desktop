@@ -88,6 +88,7 @@ if (Test-Path $ResolvedOutputPath) {
 
 $StagingDirectory = Join-Path $env:TEMP ("dasacloud-installer-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
+$StagedInstallerPath = Join-Path $StagingDirectory (Split-Path -Leaf $ResolvedOutputPath)
 
 try {
     $PackageFileName = Split-Path -Leaf $ResolvedPackagePath
@@ -138,7 +139,7 @@ SourceFiles=SourceFiles
 InstallPrompt=
 DisplayLicense=
 FinishMessage=DasaCloud was installed successfully.
-TargetName=$ResolvedOutputPath
+TargetName=$StagedInstallerPath
 FriendlyName=$DisplayName
 AppLaunched=powershell.exe -NoProfile -ExecutionPolicy Bypass -File install-dasacloud.ps1 $InstallArguments
 PostInstallCmd=<None>
@@ -152,10 +153,13 @@ $($SourceEntries -join "`r`n")
 "@
 
     [System.IO.File]::WriteAllText($SedPath, $SedContent, [System.Text.Encoding]::ASCII)
-    & $IExpressPath /N $SedPath
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ResolvedOutputPath)) {
-        throw "IExpress failed to create $ResolvedOutputPath."
+    $IExpressOutput = & $IExpressPath /N /Q $SedPath 2>&1
+    $IExpressExitCode = $LASTEXITCODE
+    if ($IExpressExitCode -ne 0 -or -not (Test-Path $StagedInstallerPath)) {
+        $IExpressDetails = ($IExpressOutput | Out-String).Trim()
+        throw "IExpress failed to create $StagedInstallerPath (exit code $IExpressExitCode). $IExpressDetails"
     }
+    Copy-Item -LiteralPath $StagedInstallerPath -Destination $ResolvedOutputPath -Force
 
     if ($ResolvedSigningCertificatePath) {
         $SignTool = Find-SignTool
