@@ -1,0 +1,27 @@
+# Rust
+/target/
+cloudreve-api/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local configuration
+.cloudreve/
+*.local
+
+# Build artifacts
+/release/
+/debug/
+dist/
+package/*.exe
+
+# Original branding source files remain local; the selected app assets are in ui/src/assets.
+/LOGHI DASA CLOUD/

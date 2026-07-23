@@ -1,0 +1,75 @@
+name: Build test installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 test installer
+    runs-on: windows-2022
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\target
+      DASACLOUD_MSIX_PUBLISHER: CN=DasaCloud Test
+      DASACLOUD_PUBLISHER_DISPLAY_NAME: DasaCloud Test
+      DASACLOUD_SIGNING_CERTIFICATE_PASSWORD: DasaCloud-Test-Only
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: ui/yarn.lock
+
+      - name: Set up Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          rustup default stable-x86_64-pc-windows-msvc
+
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack yarn --cwd ui install --immutable
+          corepack yarn --cwd ui build
+
+      - name: Build DasaCloud
+        shell: pwsh
+        run: cargo build --package dasacloud-desktop --release --target x86_64-pc-windows-msvc
+
+      - name: Create a temporary test certificate
+        shell: pwsh
+        run: |
+          $certificate = New-SelfSignedCertificate -Type Custom -Subject "CN=DasaCloud Test" -KeyUsage DigitalSignature -FriendlyName "DasaCloud Test" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+          $password = ConvertTo-SecureString -String $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD -Force -AsPlainText
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Export-PfxCertificate -Cert $certificate -FilePath dist\DasaCloud-Test.pfx -Password $password | Out-Null
+          Export-Certificate -Cert $certificate -FilePath dist\DasaCloud-Test.cer | Out-Null
+
+      - name: Build signed test MSIX and Setup executable
+        shell: pwsh
+        run: |
+          .\build-msix.ps1 -Arch x64 -SkipBuild -OutputDir dist -Publisher $env:DASACLOUD_MSIX_PUBLISHER -PublisherDisplayName $env:DASACLOUD_PUBLISHER_DISPLAY_NAME -CertificatePath dist\DasaCloud-Test.pfx -CertificatePassword $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD
+          .\build-installer.ps1 -PackagePath dist\DasaCloud.x64.msix -TrustCertificatePath dist\DasaCloud-Test.cer -SigningCertificatePath dist\DasaCloud-Test.pfx -CertificatePassword $env:DASACLOUD_SIGNING_CERTIFICATE_PASSWORD -OutputPath dist\DasaCloud-Test-Setup-x64.exe -DisplayName "DasaCloud Test Setup"
+
+      - name: Write checksums
+        shell: pwsh
+        run: Get-FileHash dist\DasaCloud-Test-Setup-x64.exe, dist\DasaCloud.x64.msix, dist\DasaCloud-Test.cer -Algorithm SHA256 | Format-List | Out-File -Encoding ascii dist\SHA256SUMS.txt
+
+      - name: Upload test installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DasaCloud-Test-x64
+          path: |
+            dist/DasaCloud-Test-Setup-x64.exe
+            dist/DasaCloud.x64.msix
+            dist/DasaCloud-Test.cer
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
